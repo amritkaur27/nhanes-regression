@@ -1,0 +1,202 @@
+---
+title: "STA302 Project"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(psych)
+library(knitr)
+library(ggplot2)
+library(tidyr)
+library(car)
+library(MASS)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Basic Cleaning
+```{r cleaning}
+
+NHANES <- read.csv(file = "NHANES.csv")
+
+Cleaned <- NHANES %>% 
+  dplyr::select(SleepHrsNight, Gender, Age, Poverty, Depressed, PhysActiveDays, AlcoholYear, 
+                HealthGen) %>%
+  dplyr::filter(Age >= 18)
+
+Cleaned <- na.omit(Cleaned)
+summary(Cleaned)
+```
+
+## Cleaning + Transforming AlcoholYear
+```{r regression}
+# model with all variables we are considering and basic cleaning only
+new_model_proposed <- lm(SleepHrsNight ~ Gender + Age + Poverty + Depressed + PhysActiveDays 
+                     + AlcoholYear + HealthGen, data = Cleaned)
+
+# Getting rid of influential points on the complete model using Cooks
+n <- nrow(Cleaned)
+cooks_d <- cooks.distance(new_model_proposed)
+influential_threshold <- 4 / n
+
+Cleaned_final <- Cleaned[cooks_d <= influential_threshold, ]
+
+# Creating a new dataset with more influential observations removed to observe the effect on model
+# We are doing this to determine whether the dataset with just Cooks distance analysis 
+# is good or whether we need to consider removing some leverage points as well.
+p <- length(coef(new_model_proposed))
+leverage <- hatvalues(new_model_proposed)
+rstudent <- rstudent(new_model_proposed)
+leverage_threshold <- 2 * p / n
+
+Cleaned_problematic <- Cleaned[leverage <= leverage_threshold & 
+                      abs(rstudent) <= 3 & cooks_d <= influential_threshold, ]
+```
+
+
+# Basic Analysis
+```{r analysis}
+# Since we decided based on the analysis conducted in the next section to use the Cleaned_final 
+# dataset, the model we used for the basic analysis uses that same dataset to ensure uniformity
+
+# model with all variables we are considering but on the cleaned dataset (our main dataset 
+# we use) w/o transformed variable (we will use this model to determine what to transform)
+model_preliminary <- lm(SleepHrsNight ~ Gender + Age + Poverty + Depressed + PhysActiveDays 
+            + AlcoholYear + HealthGen, data = Cleaned_final)
+
+
+par(mfrow = c(2, 3)) # Arrange in a grid
+crPlots(model_preliminary, main = "Component-Residual Plot for Preliminary Model")
+
+
+plot(model_preliminary, which = 1, 
+     main = "Residual-Fitted Plot for Prelim")
+abline(h = 0, col = "pink", lwd = 2, lty = 2)
+
+complete_table_preliminary <- cbind(summary(model_preliminary)$coefficients, confint(model_preliminary))
+print(complete_table_preliminary)
+
+# We used this to determine that the AlcoholYear variable needs a log transformation
+```
+
+# Analysis for Deciding Dataset
+``` {r deciding dataset}
+# Since AlcoholYear is right-skewed, we apply a log(x + 1) transformation
+Cleaned_final$log_AlcoholYear <- log(Cleaned_final$AlcoholYear + 1)
+Cleaned_problematic$log_AlcoholYear <- log(Cleaned_problematic$AlcoholYear + 1)
+
+
+# model w/ transformation on AlcoholYear and all other variables we want to consider to use 
+# for partial f test on dataset with only Cooks Analysis
+full_model <- lm(SleepHrsNight ~ Gender + Age + Poverty + Depressed + PhysActiveDays 
+                 + log_AlcoholYear + HealthGen, data = Cleaned_final)
+
+# model w/ transformation on AlcoholYear and all other variables we want to consider to use 
+# for partial f test on dataset with Cooks Analysis + leverage points + studentized residuals
+full_model_problematic <- lm(SleepHrsNight ~ Gender + Age + Poverty + Depressed + PhysActiveDays 
+                 + log_AlcoholYear + HealthGen, data = Cleaned_problematic)
+
+summary(full_model)
+summary(full_model_problematic)
+
+# summary shows that getting rid of leverage values and values with absolute studentized residual
+# less than 3 would eliminate important information --> we can see this in the change in 
+# p-value and also the elimination of some predictor variables
+
+# So the dataset we will be using for this project is Cleaned_final
+```
+
+
+## Transformed Model Selection and Diagnostics
+``` {r transformation}
+# Testing for multicolinearity
+# multicolinearity not an issue
+vif_results <- vif(full_model)
+print(vif_results)
+
+# Stepwise model to determine predictors to keep
+stepwise_model <- step(full_model, direction = "both")
+summary(stepwise_model)
+
+# model w/ transformation on AlcoholYear and potential variables removed using Stepwise model
+reduced_final_model <- lm(SleepHrsNight ~ Gender + Age + Depressed + log_AlcoholYear 
+                          + HealthGen, data = Cleaned_final)
+# Component-Residual Plot
+crPlots(reduced_final_model, "log_AlcoholYear")
+
+# Partial F Test to ensure the reduced model is better
+partial_f_test <- anova(reduced_final_model, full_model)
+print(partial_f_test)
+
+# Display final model summary
+complete_table_final <- cbind(summary(reduced_final_model)$coefficients, confint(reduced_final_model))
+
+# Model that we had used in our proposal but on the cleaned dataset
+# we use this model to compare the AIC, BIC, R-squared, and adjusted R-squared values
+model_proposal <- lm(SleepHrsNight ~ Gender + Age + Poverty + Depressed + PhysActiveDays 
+                     + AlcoholYear, data = Cleaned_final)
+
+# metrics of the reduced final model
+final_metrics <- data.frame(
+  Model = "Reduced Final Model",
+  R_squared_proposal = summary(reduced_final_model)$r.squared,
+  Adjusted_R_squared_proposal = summary(reduced_final_model)$adj.r.squared,
+  AIC = AIC(reduced_final_model),
+  BIC = BIC(reduced_final_model)
+)
+print(final_metrics)
+
+# metrics of the model presented in our proposal
+proposed_metrics <- data.frame(
+  Model = "Proposed Model",
+  R_squared_proposal = summary(model_proposal)$r.squared,
+  Adjusted_R_squared_proposal = summary(model_proposal)$adj.r.squared,
+  AIC = AIC(model_proposal),
+  BIC = BIC(model_proposal)
+)
+print(proposed_metrics)
+
+# We see that the reduced final model is a good transformed version of our initial proposed model
+
+# Final Diagnostics on the reduced final model which is what we are presenting
+par(mfrow = c(1, 3))
+plot(reduced_final_model, which = 1, main="Final: Residuals vs. Fitted")
+plot(reduced_final_model, which = 2, main="Final: QQ Plot")
+hist(rstandard(reduced_final_model), xlab = "Standardized Residuals", 
+     main = "Final: Std Residuals Hist.")
+par(mfrow = c(1, 1))
+```
+## Box-Cox
+```{r box-cox}
+# this is an exploratory section to see whether a Box-Cox transformation is suitable for our model
+bc <- boxcox(full_model)
+optimal_lambda <- bc$x[which.max(bc$y)]
+Cleaned_final$transformed_sleep <- (Cleaned_final$SleepHrsNight^optimal_lambda - 1) / optimal_lambda
+
+transformed_final_model <- lm(transformed_sleep ~ Gender + Depressed + Age+ 
+                                log_AlcoholYear + HealthGen, 
+                              data = Cleaned_final)
+
+summary(transformed_final_model)
+
+# comparing the transformed model with the Box-Cox transformation vs. without shows that using 
+# a Box-cox transformation is a bad idea
+
+# while the Q-Q plot may look similar, the residual vs. fitted plot shows that the transformation 
+# inflated the models variance
+
+par(mfrow = c(1, 3))
+plot(transformed_final_model, which = 1, main="Transform: Residuals-Fitted")
+plot(transformed_final_model, which = 2, main="Transform: QQ Plot")
+hist(rstandard(transformed_final_model), xlab = "Standardized Residuals", 
+     main = "Transform: Std Residuals Hist.")
+par(mfrow = c(1, 1))
+```
+
+## Dataset Downloading
+``` {r, dataset}
+write.csv(NHANES, "NHANES.csv", row.names = FALSE)
+write.csv(Cleaned, "Cleaned.csv", row.names = FALSE)
+```
+
